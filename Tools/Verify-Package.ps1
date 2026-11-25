@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)][string]$ArchivePath,
     [Parameter(Mandatory)][string]$EnginePath,
     [Parameter(Mandatory)][string]$SharedToolsPath,
-    [string]$GamePath
+    [string]$GamePath,
+    [ValidateSet('Steam', 'Windows', 'WindowsServer', 'Release')][string]$PackageType = 'Steam'
 )
 $ErrorActionPreference = 'Stop'
 $privacyChecker = Join-Path $SharedToolsPath 'Test-Privacy.ps1'
@@ -14,16 +15,23 @@ foreach ($tool in @($privacyChecker, $archiveInspector, $containerInspector, $in
 }
 $ArchivePath = (Resolve-Path -LiteralPath $ArchivePath).Path
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$containerName = 'InstantVolumeReducerFactoryGame-Windows'
-$expectedFiles = @(
-    'InstantVolumeReducer.uplugin',
-    'Resources/Icon128.png',
-    'Binaries/Win64/FactoryGameSteam-InstantVolumeReducer-Win64-Shipping.dll',
-    'Binaries/Win64/FactoryGameSteam-Win64-Shipping.modules',
-    "Content/Paks/Windows/$containerName.pak",
-    "Content/Paks/Windows/$containerName.ucas",
-    "Content/Paks/Windows/$containerName.utoc"
-)
+if ($GamePath -and $PackageType -ne 'Steam') { throw 'Installed verification is supported only for the Steam development package' }
+$targets = if ($PackageType -eq 'Release') { @('Windows', 'WindowsServer') }
+    elseif ($PackageType -eq 'WindowsServer') { @('WindowsServer') } else { @('Windows') }
+$expectedFiles = @()
+foreach ($target in $targets) {
+    $prefix = if ($PackageType -eq 'Release') { "$target/" } else { '' }
+    $containerName = "InstantVolumeReducerFactoryGame-$target"
+    $targetFiles = @('InstantVolumeReducer.uplugin', 'Resources/Icon128.png', 'Resources/LICENSE')
+    $binaries = if ($target -eq 'WindowsServer') { @('FactoryServer') }
+        elseif ($PackageType -eq 'Steam') { @('FactoryGameSteam') } else { @('FactoryGameSteam', 'FactoryGameEGS') }
+    foreach ($binary in $binaries) {
+        $targetFiles += "Binaries/Win64/$binary-InstantVolumeReducer-Win64-Shipping.dll"
+        $targetFiles += "Binaries/Win64/$binary-Win64-Shipping.modules"
+    }
+    foreach ($extension in @('pak', 'ucas', 'utoc')) { $targetFiles += "Content/Paks/$target/$containerName.$extension" }
+    $expectedFiles += @($targetFiles | ForEach-Object { $prefix + $_ })
+}
 $python = Join-Path $EnginePath 'Engine\Binaries\ThirdParty\Python3\Win64\python.exe'
 $inspection = & $python $archiveInspector $ArchivePath
 if ($LASTEXITCODE -ne 0) { throw 'Shared archive inspection failed' }
@@ -35,12 +43,6 @@ New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
 $reportPath = (Resolve-Path -LiteralPath $reportPath).Path
 [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $reportPath)
 $files | Set-Content -LiteralPath (Join-Path $reportPath 'archive-files.txt')
-$pakPath = Join-Path $reportPath "Content\Paks\Windows\$containerName.pak"
-$utocPath = Join-Path $reportPath "Content\Paks\Windows\$containerName.utoc"
-$content = & $containerInspector -PakPath $pakPath -UtocPath $utocPath -EnginePath $EnginePath -ReportPath $reportPath
-if (Compare-Object @('AssetRegistry.bin', 'Config/PluginSettings.ini') $content.PakFiles) {
-    throw 'Unexpected or missing files inside the pak container'
-}
 $contentPrefix = '../../../FactoryGame/Mods/InstantVolumeReducer/Content/'
 $expectedCooked = @(
     "${contentPrefix}IVR_Config.uasset",
@@ -49,11 +51,29 @@ $expectedCooked = @(
     "${contentPrefix}Input/IMC_InstantVolumeReducer.uasset",
     '<ContainerHeader>'
 )
-if (Compare-Object $expectedCooked $content.CookedFiles) {
-    throw 'Unexpected or missing cooked content; review runtime dependencies before updating the expected list'
+$sourceDescriptor = Get-Content (Join-Path $PSScriptRoot '../InstantVolumeReducer.uplugin') -Raw | ConvertFrom-Json
+$extractedFiles = @()
+foreach ($target in $targets) {
+    $targetRoot = if ($PackageType -eq 'Release') { Join-Path $reportPath $target } else { $reportPath }
+    if ((Get-FileHash -LiteralPath (Join-Path $targetRoot 'Resources/LICENSE')).Hash -ne
+        (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot '../LICENSE')).Hash) { throw 'Packaged license differs from the repository license' }
+    $descriptor = Get-Content (Join-Path $targetRoot 'InstantVolumeReducer.uplugin') -Raw | ConvertFrom-Json
+    foreach ($field in @('Version', 'VersionName', 'SemVersion', 'GameVersion')) {
+        if ($descriptor.$field -ne $sourceDescriptor.$field) { throw "Packaged descriptor mismatch: $field" }
+    }
+    if (($descriptor.Plugins | ConvertTo-Json -Depth 5 -Compress) -ne ($sourceDescriptor.Plugins | ConvertTo-Json -Depth 5 -Compress)) {
+        throw 'Packaged plugin dependencies differ from source'
+    }
+    $containerName = "InstantVolumeReducerFactoryGame-$target"
+    $pakPath = Join-Path $targetRoot "Content/Paks/$target/$containerName.pak"
+    $utocPath = Join-Path $targetRoot "Content/Paks/$target/$containerName.utoc"
+    $content = & $containerInspector -PakPath $pakPath -UtocPath $utocPath -EnginePath $EnginePath -ReportPath (Join-Path $reportPath "$target-inspection")
+    if (Compare-Object @('AssetRegistry.bin', 'Config/PluginSettings.ini') $content.PakFiles) { throw 'Unexpected or missing files inside the pak container' }
+    if (Compare-Object $expectedCooked $content.CookedFiles) { throw 'Unexpected or missing cooked content; review runtime dependencies before updating the expected list' }
+    $extractedFiles += $content.ExtractedFiles
 }
 $packageFiles = @($files | ForEach-Object { Join-Path $reportPath $_ })
-& $privacyChecker -Files ($packageFiles + $content.ExtractedFiles)
+& $privacyChecker -Files ($packageFiles + $extractedFiles)
 if ($GamePath) {
     $installedRoot = Join-Path $GamePath 'FactoryGame\Mods\InstantVolumeReducer'
     & $python $installedVerifier $ArchivePath $installedRoot --report (Join-Path $reportPath 'installed-hashes.json')

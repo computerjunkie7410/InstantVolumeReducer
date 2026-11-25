@@ -10,4 +10,4 @@ if (!$SharedToolsPath) {
 }
 $builder = Join-Path $SharedToolsPath 'Build-Mod.ps1'
 if (!(Test-Path -LiteralPath $builder -PathType Leaf)) { throw 'Shared build tools are missing; provide -SharedToolsPath' }
-& $builder -ModPath (Join-Path $PSScriptRoot '..') -PackageVerifier (Join-Path $PSScriptRoot 'Verify-Package.ps1') -EnginePath $EnginePath -GamePath $GamePath
+& $builder -ModPath (Join-Path $PSScriptRoot '..') -PackageVerifier (Join-Path $PSScriptRoot 'Verify-Package.ps1') -EnginePath $EnginePath -GamePath $GamePath -PakRulesPath (Join-Path $PSScriptRoot 'PackageRules.ini')
