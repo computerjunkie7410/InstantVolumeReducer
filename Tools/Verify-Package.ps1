@@ -6,6 +6,11 @@ param(
     [ValidateSet('Steam', 'Windows', 'WindowsServer', 'Release')][string]$PackageType = 'Steam'
 )
 $ErrorActionPreference = 'Stop'
+$sourceDescriptor = Get-Content (Join-Path $PSScriptRoot '../InstantVolumeReducer.uplugin') -Raw | ConvertFrom-Json
+if ($sourceDescriptor.SemVersion -notmatch '^(0|[1-9][0-9]*)\.') { throw 'Mod SemVersion must start with a numeric major component' }
+if ($sourceDescriptor.Version -ne [int]$Matches[1] -or $sourceDescriptor.VersionName -cne $sourceDescriptor.SemVersion) {
+    throw 'SML requires Version to match the SemVersion major component and VersionName to match SemVersion'
+}
 $privacyChecker = Join-Path $SharedToolsPath 'Test-Privacy.ps1'
 $archiveInspector = Join-Path $SharedToolsPath 'release_archive.py'
 $containerInspector = Join-Path $SharedToolsPath 'Inspect-CookedContent.ps1'
@@ -51,7 +56,6 @@ $expectedCooked = @(
     "${contentPrefix}Input/IMC_InstantVolumeReducer.uasset",
     '<ContainerHeader>'
 )
-$sourceDescriptor = Get-Content (Join-Path $PSScriptRoot '../InstantVolumeReducer.uplugin') -Raw | ConvertFrom-Json
 $extractedFiles = @()
 foreach ($target in $targets) {
     $targetRoot = if ($PackageType -eq 'Release') { Join-Path $reportPath $target } else { $reportPath }
